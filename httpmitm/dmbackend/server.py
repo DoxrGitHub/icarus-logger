@@ -3,59 +3,56 @@ import http.client as cli
 import requests
 import device_management_pb2
 import socket
+import json
 from urllib import parse
-class A(BaseHTTPRequestHandler):
+
+class MITMHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        
+        content_length = int(self.headers.get('Content-Length', 0))
+        request_data = self.rfile.read(content_length)
 
-        dat = self.rfile.read(int(self.headers.get('Content-Length')))
         dmr = device_management_pb2.DeviceManagementRequest()
-        dmr.ParseFromString(dat)
-        print(dmr)
-        if (dmr.HasField('device_state_retrieval_request')):
-            # Expecting a device state response
-            print("intercepting")
-            x = device_management_pb2.DeviceManagementResponse()
-            rr = x.device_state_retrieval_response
-            dv = device_management_pb2.DeviceInitialEnrollmentStateResponse()
-            dv.Clear()
-            dv = rr.initial_state_response
-            dv.initial_enrollment_mode = 0
-            dv.management_domain = ""
-            dv.is_license_packaged_with_device = False
-            dv.disabled_state.message = ""
-            
-            rr.restore_mode = 0
-            rr.management_domain = ""
-            self.send_response(200)
-            self.send_header("Content-Type", "application/x-protobuffer")
-            self.send_header("Content-Length", str(len(x.SerializeToString())))
-            self.end_headers()
-            print(x)
-            self.wfile.write(x.SerializeToString())
+        try:
+            dmr.ParseFromString(request_data)
+            parsed_protobuf = str(dmr)
+        except Exception as e:
+            parsed_protobuf = f"Failed to parse Protobuf: {e}"
 
-            return
-        print(parse.urlparse(self.path).query)
-        con = requests.request('POST', 'https://m.google.com/devicemanagement/data/api?' + parse.urlparse(self.path).query, data=dat, headers=dict(self.headers))
-        print(f"Status code: {con.status_code}")
+        log_data = {
+            "method": self.command,
+            "path": self.path,
+            "headers": dict(self.headers),
+            "raw_body": request_data.hex(),
+            "parsed_protobuf": parsed_protobuf
+        }
+        print("\n===== Incoming Request =====")
+        print(json.dumps(log_data, indent=4))
 
-        self.send_response(con.status_code)
-       
+        google_url = 'https://m.google.com/devicemanagement/data/api?' + parse.urlparse(self.path).query
+        google_response = requests.post(google_url, data=request_data, headers=dict(self.headers))
+
+        log_response = {
+            "status_code": google_response.status_code,
+            "headers": dict(google_response.headers),
+            "raw_body": google_response.content.hex()
+        }
+        print("\n===== Google Response =====")
+        print(json.dumps(log_response, indent=4))
+
+        self.send_response(google_response.status_code)
+        for key, value in google_response.headers.items():
+            self.send_header(key, value)
         self.end_headers()
-        dmr = device_management_pb2.DeviceManagementResponse()
-        dmr.ParseFromString(con.content)
-        print(dmr)
-        self.wfile.write(dmr.SerializeToString())
-        
-        # self.wfile.close()
-print("Starting internal server!")
-hs = HTTPServer(("0.0.0.0", 3040), A,bind_and_activate=False)
-hs.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
-hs.server_bind()
-hs.server_activate()
-try: 
-    hs.serve_forever()
-except BaseException as e:
-    print("Interrupted")
-    hs.server_close()
+        self.wfile.write(google_response.content)
 
+print("Starting HTTP MITM Proxy on port 3040...")
+server = HTTPServer(("0.0.0.0", 3040), MITMHandler, bind_and_activate=False)
+server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, True)
+server.server_bind()
+server.server_activate()
+
+try:
+    server.serve_forever()
+except KeyboardInterrupt:
+    print("\nShutting down server...")
+    server.server_close()
