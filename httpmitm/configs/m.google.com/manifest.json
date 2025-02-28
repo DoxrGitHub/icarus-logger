@@ -1,5 +1,5 @@
 {
-    "filters": ["https"],
+    "filters": [],
     "proxyPath": "index.js",
-    "matches": "m\\.google\\.com"
+    "matches": ".*"
 }
